@@ -1,0 +1,15 @@
+﻿<wpf:ResourceDictionary xml:space="preserve" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:s="clr-namespace:System;assembly=mscorlib" xmlns:ss="urn:shemas-jetbrains-com:settings-storage-xaml" xmlns:wpf="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+	<s:String x:Key="/Default/Environment/AssemblyExplorer/XmlDocument/@EntryValue">&lt;AssemblyExplorer&gt;
+  &lt;PhysicalFolder Path="/home/luka/.nuget/packages/silk.net.webgpu.native.wgpu/2.20.0" Loaded="True" /&gt;
+  &lt;PhysicalFolder Path="/home/luka/.nuget/packages/silk.net.webgpu.native.wgpu/2.21.0" Loaded="True" /&gt;
+&lt;/AssemblyExplorer&gt;</s:String>
+	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=0481cce9_002Df381_002D467f_002Dbf5d_002Dfd99be542835/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" Name="TestGenerateTextureWithMipmaps #2" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;
+  &lt;TestAncestor&gt;
+    &lt;TestId&gt;xUnit::631A157E-8F33-4B65-9F17-38DC2AA68737::net6.0::WGPUMipmap.Test.Test.TestGenerateTextureWithMipmaps&lt;/TestId&gt;
+  &lt;/TestAncestor&gt;
+&lt;/SessionState&gt;</s:String>
+	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=101bba42_002D49f5_002D44ab_002D8001_002D548e92f2bb11/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" IsActive="True" Name="TestGenerateTextureWithMipmaps" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;
+  &lt;TestAncestor&gt;
+    &lt;TestId&gt;xUnit::631A157E-8F33-4B65-9F17-38DC2AA68737::net6.0::WGPUMipmap.Test.Test&lt;/TestId&gt;
+  &lt;/TestAncestor&gt;
+&lt;/SessionState&gt;</s:String></wpf:ResourceDictionary>
