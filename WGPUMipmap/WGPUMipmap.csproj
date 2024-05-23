@@ -1,16 +1,35 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net6.0</TargetFramework>
+        <TargetFramework>net8.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <PackageId>wgpu-mipmap</PackageId>
+        <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+        <Title>WebGPU Mipmap Generator</Title>
+        <Version>0.2.0</Version>
+        <Authors>Erkapic Luka</Authors>
+        <Description>A WebGPU texture mipmap generator.</Description>
+        <PackageProjectUrl>https://github.com/luka712/wgpu-mipmap-dotnet</PackageProjectUrl>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <RepositoryUrl>https://github.com/luka712/wgpu-mipmap-dotnet</RepositoryUrl>
+        <PackageTags>wgpu,mipmap</PackageTags>
+        <PackageReleaseNotes>0.2.0 
+- Support for 'bgra8unorm' texture format.</PackageReleaseNotes>
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="Silk.NET.WebGPU" Version="2.21.0" />
-      <PackageReference Include="Silk.NET.WebGPU.Extensions.WGPU" Version="2.21.0" />
-      <PackageReference Include="Silk.NET.WebGPU.Native.WGPU" Version="2.21.0" />
+      <None Include="..\README.md">
+        <Pack>True</Pack>
+        <PackagePath>\</PackagePath>
+      </None>
+    </ItemGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Silk.NET.WebGPU" Version="2.20.0" />
+      <PackageReference Include="Silk.NET.WebGPU.Extensions.WGPU" Version="2.20.0" />
+      <PackageReference Include="Silk.NET.WebGPU.Native.WGPU" Version="2.20.0" />
     </ItemGroup>
 
 </Project>

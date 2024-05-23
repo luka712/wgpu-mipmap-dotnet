@@ -1,6 +1,4 @@
-﻿using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Security.AccessControl;
+﻿using System.Runtime.InteropServices;
 using Silk.NET.WebGPU;
 
 namespace WGPUMipmap;
@@ -22,7 +20,7 @@ public static class WebGPUApiExtensions
     public static unsafe Texture* DeviceCreateTextureWithMipmap(this WebGPU api, Device* device, void* data, uint width, uint height)
     {
         using MipmapGenerator generator = new MipmapGenerator(api, device);
-        return generator.GenerateMipmaps(data, width, height);
+        return generator.CreateTexture2DWithMipmaps(data, width, height);
     }
 }
 
@@ -31,11 +29,13 @@ public static class WebGPUApiExtensions
 /// </summary>
 public unsafe class MipmapGenerator : IDisposable
 {
+    private const string TEXTURE_FORMAT_KEY = "##TEXTURE_FORMAT##";
+
     private const string SHADER = @"
         @group(0) @binding(0)
         var t_base: texture_2d<f32>;
         @group(0) @binding(1)
-        var t_next: texture_storage_2d<rgba8unorm, write>;
+        var t_next: texture_storage_2d<##TEXTURE_FORMAT##, write>;
 
         @compute @workgroup_size(8,8)
         fn generateMipmap(@builtin(global_invocation_id) gid: vec3<u32>)
@@ -50,14 +50,24 @@ public unsafe class MipmapGenerator : IDisposable
             // Write to the next level.
             textureStore(t_next, gid.xy, color);
         }";
-    
+
+    private Dictionary<TextureFormat, string> textureFormats = new Dictionary<TextureFormat, string>()
+    {
+        [TextureFormat.Rgba8Unorm] = "rgba8unorm",
+        [TextureFormat.Bgra8Unorm] = "bgra8unorm"
+    };
+
     private readonly WebGPU api;
     private readonly Device* device;
 
+
     private ComputePipeline* pipeline;
+    private TextureFormat textureFormat;
     private Texture* texture;
     private BindGroupLayout* bindGroupLayout;
-    private BindGroup* bindGroup;
+    // Keep number of allocated bind groups just in case.
+    private BindGroup*[] allocatedBindGroups = new BindGroup*[10000];
+    private int allocatedBindGroupsCount = 0;
 
     private Extent3D[] textureMipSizes;
     private TextureView*[] textureViews;
@@ -72,7 +82,7 @@ public unsafe class MipmapGenerator : IDisposable
         this.api = api;
         this.device = device;
     }
-    
+
     /// <summary>
     /// Generates the 2d texture with mipmaps.
     /// </summary>
@@ -80,8 +90,14 @@ public unsafe class MipmapGenerator : IDisposable
     /// <param name="width">The width of an image data owner.</param>
     /// <param name="height">The height of an image data owner.</param>
     /// <returns>The pointer to the <see cref="Texture"/>.</returns>
-    public Texture* GenerateMipmaps(void* data, uint width, uint height)
+    public Texture* CreateTexture2DWithMipmaps(void* data, uint width, uint height, TextureFormat textureFormat = TextureFormat.Rgba8Unorm)
     {
+        if(!textureFormats.ContainsKey(textureFormat))
+        {
+            throw new ArgumentException($"Texture format {textureFormat} is currently not supported.");
+        }
+
+        this.textureFormat = textureFormat;
         InitTexture(data, width, height);
         InitTextureViews();
         InitBindGroupLayout();
@@ -100,12 +116,12 @@ public unsafe class MipmapGenerator : IDisposable
         TextureUsage usage = TextureUsage.CopyDst
                              | TextureUsage.CopySrc
                              | TextureUsage.TextureBinding
-                             | TextureUsage.RenderAttachment;
+                             | TextureUsage.StorageBinding;
 
         TextureDescriptor descriptor = new TextureDescriptor();
         descriptor.Dimension = TextureDimension.Dimension2D;
         descriptor.Size = size;
-        descriptor.Format = TextureFormat.Rgba8Unorm;
+        descriptor.Format = this.textureFormat;
         descriptor.SampleCount = 1;
         descriptor.Usage = usage;
 
@@ -146,7 +162,7 @@ public unsafe class MipmapGenerator : IDisposable
     private void InitTextureViews()
     {
         TextureViewDescriptor descriptor = new TextureViewDescriptor();
-        descriptor.Format = TextureFormat.Rgba8Unorm;
+        descriptor.Format = this.textureFormat;
         descriptor.Dimension = TextureViewDimension.Dimension2D;
         descriptor.Aspect = TextureAspect.All;
         descriptor.BaseArrayLayer = 0;
@@ -193,6 +209,7 @@ public unsafe class MipmapGenerator : IDisposable
         }
 
         BindGroupLayoutDescriptor descriptor = new BindGroupLayoutDescriptor();
+        descriptor.Label = (byte*)Marshal.StringToHGlobalAnsi("Mipmap Generator Bind Group Layout");
         descriptor.EntryCount = 2;
 
         BindGroupLayoutEntry* entries = stackalloc BindGroupLayoutEntry[2];
@@ -210,7 +227,7 @@ public unsafe class MipmapGenerator : IDisposable
         entries[1].Binding = 1;
         entries[1].Visibility = ShaderStage.Compute;
         entries[1].StorageTexture.Access = StorageTextureAccess.WriteOnly;
-        entries[1].StorageTexture.Format = TextureFormat.Rgba8Unorm;
+        entries[1].StorageTexture.Format = this.textureFormat;
         entries[1].StorageTexture.ViewDimension = TextureViewDimension.Dimension2D;
 
         descriptor.Entries = entries;
@@ -218,27 +235,34 @@ public unsafe class MipmapGenerator : IDisposable
         this.bindGroupLayout = this.api.DeviceCreateBindGroupLayout(this.device, in descriptor);
     }
 
-    private void InitBindGroup(uint nextMipLevel)
+    private BindGroup* InitBindGroup(uint nextMipLevel)
     {
-        if (this.bindGroup != null)
-        {
-            this.api.BindGroupRelease(this.bindGroup);
-        }
-        
         BindGroupDescriptor descriptor = new BindGroupDescriptor();
+        descriptor.Label = (byte*)Marshal.StringToHGlobalAnsi("Mipmap Generator Bind Group");
         descriptor.Layout = this.bindGroupLayout;
+        descriptor.EntryCount = 2;
 
         // - ENTRIES
         BindGroupEntry* entries = stackalloc BindGroupEntry[2];
         entries[0] = new BindGroupEntry();
         entries[0].Binding = 0;
         entries[0].TextureView = this.textureViews[nextMipLevel - 1];
+        entries[0].Buffer = null;
+        entries[0].Sampler = null;
 
-        entries[0] = new BindGroupEntry();
-        entries[0].Binding = 1;
-        entries[0].TextureView = this.textureViews[nextMipLevel];
+        entries[1] = new BindGroupEntry();
+        entries[1].Binding = 1;
+        entries[1].TextureView = this.textureViews[nextMipLevel];
+        entries[1].Buffer = null;
+        entries[1].Sampler = null;
 
-        this.bindGroup = this.api.DeviceCreateBindGroup(this.device, in descriptor);
+        descriptor.Entries = entries;
+
+        BindGroup* bindGroup = this.api.DeviceCreateBindGroup(this.device, in descriptor);
+        this.allocatedBindGroups[allocatedBindGroupsCount] = bindGroup;
+        allocatedBindGroupsCount++;
+
+        return bindGroup;
     }
 
     /// <summary>
@@ -246,18 +270,22 @@ public unsafe class MipmapGenerator : IDisposable
     /// </summary>
     private void InitPipeline()
     {
+        string shader = SHADER;
+        shader = shader.Replace(TEXTURE_FORMAT_KEY, textureFormats[this.textureFormat]);
+
+
         // - SHADER MODULE
         ShaderModuleWGSLDescriptor shaderModuleWGSLDescriptor = new ShaderModuleWGSLDescriptor();
         shaderModuleWGSLDescriptor.Chain.Next = null;
         shaderModuleWGSLDescriptor.Chain.SType = SType.ShaderModuleWgsldescriptor;
-        shaderModuleWGSLDescriptor.Code = (byte*)Marshal.StringToHGlobalAnsi(SHADER);
+        shaderModuleWGSLDescriptor.Code = (byte*)Marshal.StringToHGlobalAnsi(shader);
 
         ShaderModuleDescriptor shaderModuleDescriptor = new ShaderModuleDescriptor();
         shaderModuleDescriptor.Label = (byte*)Marshal.StringToHGlobalAnsi("Mipmap generator shader module");
         shaderModuleDescriptor.NextInChain = (ChainedStruct*)&shaderModuleWGSLDescriptor;
-        
+
         ShaderModule* shaderModule = this.api.DeviceCreateShaderModule(this.device, in shaderModuleDescriptor);
-        
+
         // - PIPELINE LAYOUT
         PipelineLayoutDescriptor pipelineLayoutDescriptor = new PipelineLayoutDescriptor();
         BindGroupLayout** layouts = stackalloc BindGroupLayout*[1];
@@ -266,7 +294,7 @@ public unsafe class MipmapGenerator : IDisposable
         pipelineLayoutDescriptor.BindGroupLayoutCount = 1;
 
         PipelineLayout* layout = this.api.DeviceCreatePipelineLayout(this.device, in pipelineLayoutDescriptor);
-        
+
         // - PIPELINE
         ComputePipelineDescriptor descriptor = new ComputePipelineDescriptor();
         descriptor.Layout = layout;
@@ -274,7 +302,7 @@ public unsafe class MipmapGenerator : IDisposable
         descriptor.Compute.EntryPoint = (byte*)Marshal.StringToHGlobalAnsi("generateMipmap");
 
         this.pipeline = this.api.DeviceCreateComputePipeline(this.device, in descriptor);
-        
+
         this.api.PipelineLayoutRelease(layout);
         this.api.ShaderModuleRelease(shaderModule);
     }
@@ -285,10 +313,10 @@ public unsafe class MipmapGenerator : IDisposable
     private void ComputePass()
     {
         Queue* queue = this.api.DeviceGetQueue(this.device);
-        
+
         // - COMMAND ENCODER
         CommandEncoder* commandEncoder = this.api.DeviceCreateCommandEncoder(this.device, null);
-        
+
         // - COMPUTE PASS
         ComputePassEncoder* computePass = this.api.CommandEncoderBeginComputePass(commandEncoder, null);
         this.api.ComputePassEncoderSetPipeline(computePass, this.pipeline);
@@ -296,39 +324,40 @@ public unsafe class MipmapGenerator : IDisposable
         for (uint nextMipLevel = 1; nextMipLevel < this.textureMipSizes.Length; nextMipLevel++)
         {
             // -- BIND
-            this.InitBindGroup(nextMipLevel);
-            this.api.ComputePassEncoderSetBindGroup(computePass, 0, this.bindGroup, 0, 0);
-            
+            BindGroup* bindGroup = this.InitBindGroup(nextMipLevel);
+            this.api.ComputePassEncoderSetBindGroup(computePass, 0, bindGroup, 0, 0);
+
             // -- DISPATCH
             Extent3D size = this.textureMipSizes[nextMipLevel];
             uint workgroupSizePerDimension = 8;
             uint workgroupCountX = (size.Width * workgroupSizePerDimension - 1) / workgroupSizePerDimension;
             uint workgroupCountY = (size.Height + workgroupSizePerDimension - 1) / workgroupSizePerDimension;
-            
+
             this.api.ComputePassEncoderDispatchWorkgroups(computePass, workgroupCountX, workgroupCountY, 1);
         }
-        
+
         // - END PASS
         this.api.ComputePassEncoderEnd(computePass);
-        
+
         // - SUBMIT
         CommandBuffer* commandBuffer = this.api.CommandEncoderFinish(commandEncoder, null);
         this.api.QueueSubmit(queue, 1, ref commandBuffer);
-        
+
         this.api.CommandBufferRelease(commandBuffer);
         this.api.ComputePassEncoderRelease(computePass);
         this.api.CommandEncoderRelease(commandEncoder);
     }
-    
+
 
     /// <inheritdoc />
     public void Dispose()
     {
-        if (this.bindGroup != null)
+        for (int i = 0; i < this.allocatedBindGroups.Length; i++)
         {
-            this.api.BindGroupRelease(this.bindGroup);
+            this.api.BindGroupRelease(allocatedBindGroups[i]);
         }
-        
+        allocatedBindGroupsCount = 0;
+
         if (this.bindGroupLayout != null)
         {
             this.api.BindGroupLayoutRelease(this.bindGroupLayout);

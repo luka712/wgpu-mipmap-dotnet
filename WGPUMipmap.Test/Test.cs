@@ -74,7 +74,26 @@ public unsafe class Test
         byte[] bytes = new byte[] { 255, 255, 255, 255 };
         fixed (byte* bytePtr = bytes)
         {
-            Texture* texture = mipmapGenerator.GenerateMipmaps(bytePtr, 1, 1);
+            Texture* texture = mipmapGenerator.CreateTexture2DWithMipmaps(bytePtr, 1, 1);
+            Assert.True(texture != null);
+        }
+        
+        mipmapGenerator.Dispose();
+    }
+    
+    [Fact]
+    public void TestGenerateTextureWithDifferentTextureFormat()
+    {
+        InitWGPU();
+        
+        MipmapGenerator mipmapGenerator = new MipmapGenerator(wgpu, device);
+
+        
+        byte[] bytes = new byte[] { 255, 255, 255, 255 };
+        fixed (byte* bytePtr = bytes)
+        {
+            TextureFormat textureFormat = TextureFormat.Bgra8Unorm;
+            Texture* texture = mipmapGenerator.CreateTexture2DWithMipmaps(bytePtr, 1, 1, textureFormat);
             Assert.True(texture != null);
         }
         
