@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Silk.NET.Core.Native;
 using Silk.NET.WebGPU;
 using Silk.NET.WebGPU.Extensions.WGPU;
 
@@ -64,52 +65,48 @@ public unsafe class Test
     }
     
     [Fact]
-    public void TestGenerateTextureWithMipmaps()
+    public void Create_rgba8unorm_format()
     {
         InitWGPU();
         
         MipmapGenerator mipmapGenerator = new MipmapGenerator(wgpu, device);
 
-        
-        byte[] bytes = new byte[] { 255, 255, 255, 255 };
+        byte[] bytes = new byte[] { 
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+        };
         fixed (byte* bytePtr = bytes)
         {
-            Texture* texture = mipmapGenerator.CreateTexture2DWithMipmaps(bytePtr, 1, 1);
-            Assert.True(texture != null);
+            TextureMipmapResult result = mipmapGenerator.CreateTexture2DWithMipmaps(bytePtr, 2, 2, TextureFormat.Rgba8Unorm);
+            Assert.True(result.Texture != null);
+            Assert.Equal<uint>(2, result.MipLevelCount);
         }
         
         mipmapGenerator.Dispose();
     }
     
     [Fact]
-    public void TestGenerateTextureWithDifferentTextureFormat()
+    public void Create_bgra8unorm_format()
     {
         InitWGPU();
-        
+
         MipmapGenerator mipmapGenerator = new MipmapGenerator(wgpu, device);
 
-        
-        byte[] bytes = new byte[] { 255, 255, 255, 255 };
+        byte[] bytes = new byte[] {
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+            255, 255, 255, 255,
+        };
         fixed (byte* bytePtr = bytes)
         {
-            TextureFormat textureFormat = TextureFormat.Bgra8Unorm;
-            Texture* texture = mipmapGenerator.CreateTexture2DWithMipmaps(bytePtr, 1, 1, textureFormat);
-            Assert.True(texture != null);
+            TextureMipmapResult result = mipmapGenerator.CreateTexture2DWithMipmaps(bytePtr, 2, 2, TextureFormat.Bgra8Unorm);
+            Assert.True(result.Texture != null);
+            Assert.Equal<uint>(2, result.MipLevelCount);
         }
-        
+
         mipmapGenerator.Dispose();
-    }
-    
-    [Fact]
-    public void TestGenerateTextureWithMipmapsViaExtension()
-    {
-        InitWGPU();
-        
-        byte[] bytes = new byte[] { 255, 255, 255, 255 };
-        fixed (byte* bytePtr = bytes)
-        {
-            Texture* texture = this.wgpu.DeviceCreateTextureWithMipmap(this.device, bytePtr, 1, 1);
-            Assert.True(texture != null);
-        }
     }
 }

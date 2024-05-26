@@ -4,35 +4,13 @@ using Silk.NET.WebGPU;
 namespace WGPUMipmap;
 
 /// <summary>
-/// WebGPU extensions.
-/// </summary>
-public static class WebGPUApiExtensions
-{
-    /// <summary>
-    /// Creates the 2D texture with mipmaps.
-    /// </summary>
-    /// <param name="api">The <see cref="WebGPU"/>.</param>
-    /// <param name="device">The pointer to the <see cref="Device"/>.</param>
-    /// <param name="data">The pointer to the data.</param>
-    /// <param name="width">The width of a data.</param>
-    /// <param name="height">The height of a data.</param>
-    /// <returns>The pointer to the <see cref="Texture"/>.</returns>
-    public static unsafe Texture* DeviceCreateTextureWithMipmap(this WebGPU api, Device* device, void* data, uint width, uint height)
-    {
-        using MipmapGenerator generator = new MipmapGenerator(api, device);
-        return generator.CreateTexture2DWithMipmaps(data, width, height);
-    }
-}
-
-/// <summary>
 /// The class responsible for generating mipmaps.
 /// </summary>
 public unsafe class MipmapGenerator : IDisposable
 {
     private const string TEXTURE_FORMAT_KEY = "##TEXTURE_FORMAT##";
 
-    private const string SHADER = @"
-        @group(0) @binding(0)
+    private const string SHADER = @"@group(0) @binding(0)
         var t_base: texture_2d<f32>;
         @group(0) @binding(1)
         var t_next: texture_storage_2d<##TEXTURE_FORMAT##, write>;
@@ -42,9 +20,9 @@ public unsafe class MipmapGenerator : IDisposable
         {
             // 2x2 average.
             var color = textureLoad(t_base, 2u * gid.xy, 0);
-            color += textureLoad(t_base, 2u * gid.xy + vec2<u32>(1, 0), 0);
-            color += textureLoad(t_base, 2u * gid.xy + vec2<u32>(0, 1), 0);
-            color += textureLoad(t_base, 2u * gid.xy + vec2<u32>(1, 1), 0);
+            color += textureLoad(t_base, 2u * gid.xy + vec2<u32>(1u, 0u), 0);
+            color += textureLoad(t_base, 2u * gid.xy + vec2<u32>(0u, 1u), 0);
+            color += textureLoad(t_base, 2u * gid.xy + vec2<u32>(1u, 1u), 0);
             color /= 4.0;
 
             // Write to the next level.
@@ -57,20 +35,20 @@ public unsafe class MipmapGenerator : IDisposable
         [TextureFormat.Bgra8Unorm] = "bgra8unorm"
     };
 
+    private readonly FallbackMipmapGenerator fallbackGenerator;
     private readonly WebGPU api;
     private readonly Device* device;
-
 
     private ComputePipeline* pipeline;
     private TextureFormat textureFormat;
     private Texture* texture;
     private BindGroupLayout* bindGroupLayout;
-    // Keep number of allocated bind groups just in case.
+    // Keep number of allocated bind groups and layouts to release when disposed.
     private BindGroup*[] allocatedBindGroups = new BindGroup*[10000];
     private int allocatedBindGroupsCount = 0;
+    private BindGroupLayout*[] allocatedBindGroupLayouts = new BindGroupLayout*[1000];
+    private int allocatedBindGroupLayoutCount = 0;
 
-    private Extent3D[] textureMipSizes;
-    private TextureView*[] textureViews;
 
     /// <summary>
     /// The constructor.
@@ -81,7 +59,18 @@ public unsafe class MipmapGenerator : IDisposable
     {
         this.api = api;
         this.device = device;
+        this.fallbackGenerator = new FallbackMipmapGenerator(api, device, this);
     }
+
+    /// <summary>
+    /// The sizes of mip textures.
+    /// </summary>
+    internal Extent3D[] TextureMipSizes { get; private set; }
+
+    /// <summary>
+    /// The texture views.
+    /// </summary>
+    internal TextureView*[] TextureViews { get; private set; }
 
     /// <summary>
     /// Generates the 2d texture with mipmaps.
@@ -89,12 +78,22 @@ public unsafe class MipmapGenerator : IDisposable
     /// <param name="data">The pointer to the data.</param>
     /// <param name="width">The width of an image data owner.</param>
     /// <param name="height">The height of an image data owner.</param>
-    /// <returns>The pointer to the <see cref="Texture"/>.</returns>
-    public Texture* CreateTexture2DWithMipmaps(void* data, uint width, uint height, TextureFormat textureFormat = TextureFormat.Rgba8Unorm)
+    /// <param name="textureFormat">The texture format.</param>
+    /// <returns>The <see cref="TextureMipmapResult"/>.</returns>
+    public TextureMipmapResult CreateTexture2DWithMipmaps(void* data, uint width, uint height, TextureFormat textureFormat)
     {
-        if(!textureFormats.ContainsKey(textureFormat))
+        if (!textureFormats.ContainsKey(textureFormat))
         {
             throw new ArgumentException($"Texture format {textureFormat} is currently not supported.");
+        }
+
+        // If we have unsporrted format used different generator.
+        if (!api.DeviceHasFeature(device, FeatureName.Bgra8UnormStorage))
+        {
+            if (textureFormat == TextureFormat.Bgra8Unorm)
+            {
+                return this.fallbackGenerator.CreateTexture2DWithMipmaps(data, width, height, textureFormat);
+            }
         }
 
         this.textureFormat = textureFormat;
@@ -104,9 +103,20 @@ public unsafe class MipmapGenerator : IDisposable
         InitPipeline();
         ComputePass();
 
-        return this.texture;
+        return new TextureMipmapResult
+        {
+            Texture = this.texture,
+            // Mip level count is simply count of texture views in our case.
+            MipLevelCount = (uint)this.TextureViews.Length,
+        };
     }
 
+    /// <summary>
+    /// Initializes and crates the texture.
+    /// </summary>
+    /// <param name="data">The pointer to the data.</param>
+    /// <param name="width">The width of a texture.</param>
+    /// <param name="height">The height of a texture.</param>
     private void InitTexture(void* data, uint width, uint height)
     {
         // - TEXTURE
@@ -131,8 +141,8 @@ public unsafe class MipmapGenerator : IDisposable
         descriptor.MipLevelCount = maxMip;
 
         // Save size.
-        this.textureMipSizes = new Extent3D[maxMip];
-        this.textureMipSizes[0] = size;
+        this.TextureMipSizes = new Extent3D[maxMip];
+        this.TextureMipSizes[0] = size;
 
         // Create the texture.
         this.texture = this.api.DeviceCreateTexture(device, in descriptor);
@@ -154,7 +164,6 @@ public unsafe class MipmapGenerator : IDisposable
         uint dataSize = width * height * 4;
         this.api.QueueWriteTexture(queue, in destination, data, dataSize, in source, in size);
     }
-
     /// <summary>
     /// Initialize the texture views for mipmaps.
     /// </summary>
@@ -170,8 +179,8 @@ public unsafe class MipmapGenerator : IDisposable
         descriptor.BaseMipLevel = 0;
         descriptor.MipLevelCount = 1;
 
-        this.textureViews = new TextureView*[this.textureMipSizes.Length];
-        for (uint i = 0; i < this.textureMipSizes.Length; i++)
+        this.TextureViews = new TextureView*[this.TextureMipSizes.Length];
+        for (uint i = 0; i < this.TextureMipSizes.Length; i++)
         {
             descriptor.BaseMipLevel = i;
             descriptor.Label = (byte*)Marshal.StringToHGlobalAnsi($"Mip level {i}");
@@ -183,12 +192,12 @@ public unsafe class MipmapGenerator : IDisposable
                 throw new InvalidOperationException($"Unable to create mip level {i}.");
             }
 
-            this.textureViews[i] = view;
+            this.TextureViews[i] = view;
 
             if (i > 0)
             {
-                Extent3D previousSize = this.textureMipSizes[i - 1];
-                this.textureMipSizes[i] = new Extent3D(
+                Extent3D previousSize = this.TextureMipSizes[i - 1];
+                this.TextureMipSizes[i] = new Extent3D(
                     width: Math.Max(1, previousSize.Width / 2),
                     height: Math.Max(1, previousSize.Height / 2),
                     depthOrArrayLayers: 1
@@ -233,8 +242,16 @@ public unsafe class MipmapGenerator : IDisposable
         descriptor.Entries = entries;
 
         this.bindGroupLayout = this.api.DeviceCreateBindGroupLayout(this.device, in descriptor);
+
+        // Save so that it can be released later.
+        this.allocatedBindGroupLayouts[allocatedBindGroupLayoutCount++] = this.bindGroupLayout;
     }
 
+    /// <summary>
+    /// Initialize the bind group for a given mipmap level.
+    /// </summary>
+    /// <param name="nextMipLevel">The mipmap level.</param>
+    /// <returns>The <see cref="BindGroup"/> pointer.</returns>
     private BindGroup* InitBindGroup(uint nextMipLevel)
     {
         BindGroupDescriptor descriptor = new BindGroupDescriptor();
@@ -246,21 +263,22 @@ public unsafe class MipmapGenerator : IDisposable
         BindGroupEntry* entries = stackalloc BindGroupEntry[2];
         entries[0] = new BindGroupEntry();
         entries[0].Binding = 0;
-        entries[0].TextureView = this.textureViews[nextMipLevel - 1];
+        entries[0].TextureView = this.TextureViews[nextMipLevel - 1];
         entries[0].Buffer = null;
         entries[0].Sampler = null;
 
         entries[1] = new BindGroupEntry();
         entries[1].Binding = 1;
-        entries[1].TextureView = this.textureViews[nextMipLevel];
+        entries[1].TextureView = this.TextureViews[nextMipLevel];
         entries[1].Buffer = null;
         entries[1].Sampler = null;
 
         descriptor.Entries = entries;
 
         BindGroup* bindGroup = this.api.DeviceCreateBindGroup(this.device, in descriptor);
-        this.allocatedBindGroups[allocatedBindGroupsCount] = bindGroup;
-        allocatedBindGroupsCount++;
+
+        // Save so that we can release it later.
+        this.allocatedBindGroups[allocatedBindGroupsCount++] = bindGroup;
 
         return bindGroup;
     }
@@ -272,7 +290,6 @@ public unsafe class MipmapGenerator : IDisposable
     {
         string shader = SHADER;
         shader = shader.Replace(TEXTURE_FORMAT_KEY, textureFormats[this.textureFormat]);
-
 
         // - SHADER MODULE
         ShaderModuleWGSLDescriptor shaderModuleWGSLDescriptor = new ShaderModuleWGSLDescriptor();
@@ -321,14 +338,14 @@ public unsafe class MipmapGenerator : IDisposable
         ComputePassEncoder* computePass = this.api.CommandEncoderBeginComputePass(commandEncoder, null);
         this.api.ComputePassEncoderSetPipeline(computePass, this.pipeline);
 
-        for (uint nextMipLevel = 1; nextMipLevel < this.textureMipSizes.Length; nextMipLevel++)
+        for (uint nextMipLevel = 1; nextMipLevel < this.TextureMipSizes.Length; nextMipLevel++)
         {
             // -- BIND
             BindGroup* bindGroup = this.InitBindGroup(nextMipLevel);
             this.api.ComputePassEncoderSetBindGroup(computePass, 0, bindGroup, 0, 0);
 
             // -- DISPATCH
-            Extent3D size = this.textureMipSizes[nextMipLevel];
+            Extent3D size = this.TextureMipSizes[nextMipLevel];
             uint workgroupSizePerDimension = 8;
             uint workgroupCountX = (size.Width * workgroupSizePerDimension - 1) / workgroupSizePerDimension;
             uint workgroupCountY = (size.Height + workgroupSizePerDimension - 1) / workgroupSizePerDimension;
@@ -343,6 +360,7 @@ public unsafe class MipmapGenerator : IDisposable
         CommandBuffer* commandBuffer = this.api.CommandEncoderFinish(commandEncoder, null);
         this.api.QueueSubmit(queue, 1, ref commandBuffer);
 
+        this.api.ComputePipelineRelease(this.pipeline);
         this.api.CommandBufferRelease(commandBuffer);
         this.api.ComputePassEncoderRelease(computePass);
         this.api.CommandEncoderRelease(commandEncoder);
@@ -352,15 +370,24 @@ public unsafe class MipmapGenerator : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
+        // - BIND GROUPS
         for (int i = 0; i < this.allocatedBindGroups.Length; i++)
         {
-            this.api.BindGroupRelease(allocatedBindGroups[i]);
+            if (allocatedBindGroups[i] != null)
+            {
+                this.api.BindGroupRelease(allocatedBindGroups[i]);
+            }
         }
         allocatedBindGroupsCount = 0;
 
-        if (this.bindGroupLayout != null)
+        // - BIND GROUP LAYOUTS
+        for (int i = 0; i < this.allocatedBindGroupLayouts.Length; i++)
         {
-            this.api.BindGroupLayoutRelease(this.bindGroupLayout);
+            if (allocatedBindGroupLayouts[i] != null)
+            {
+                this.api.BindGroupLayoutRelease(allocatedBindGroupLayouts[i]);
+            }
         }
+        allocatedBindGroupLayoutCount = 0;
     }
 }
